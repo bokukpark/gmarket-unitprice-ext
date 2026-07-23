@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "지마켓 단위가격 비교",
+  "description": "지마켓 검색 결과에서 상품별 단위가격(100ml/100g/개당 가격)을 표시하고 비교합니다.",
+  "version": "0.1.0",
+  "default_locale": "ko",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://browse.gmarket.co.kr/search*",
+        "https://browse.gmarket.co.kr/list*"
+      ],
+      "js": ["src/parser/unitParser.js", "src/content/gmarketSearch.js"],
+      "css": ["src/styles/badge.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": []
+}

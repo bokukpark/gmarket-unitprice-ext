@@ -1,0 +1,26 @@
+.upx-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background-color: #333;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.upx-badge--unknown {
+  background-color: #999;
+  font-weight: 400;
+}
+
+.upx-cheapest {
+  outline: 2px solid #ff5722;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.upx-cheapest .upx-badge {
+  background-color: #ff5722;
+}
