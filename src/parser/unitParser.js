@@ -34,6 +34,14 @@ const WEIGHT_UNITS = {
   'kg': { category: 'weight', factor: 1000 },
 };
 
+// 길이 단위: 화장지/키친타월처럼 "30M 30롤"(롤당 길이 x 롤 수)로 표기되는 상품군에 필수.
+// 기준 단위는 m(미터). 'ml'/'mg'와 접두 충돌이 없도록 QUANTITY_REGEX가 긴 단위부터
+// 매칭하는 정렬(UNIT_KEYS_SORTED)에 의존한다.
+const LENGTH_UNITS = {
+  'm': { category: 'length', factor: 1 },
+  'cm': { category: 'length', factor: 0.01 },
+};
+
 const COUNT_UNITS = {
   '개입': { category: 'count', factor: 1 }, // "6개입" 처럼 붙어쓰는 흔한 복합 표기
   '매입': { category: 'count', factor: 1 },
@@ -55,7 +63,7 @@ const COUNT_UNITS = {
   'ea': { category: 'count', factor: 1 },
 };
 
-const ALL_UNITS = { ...VOLUME_UNITS, ...WEIGHT_UNITS, ...COUNT_UNITS };
+const ALL_UNITS = { ...VOLUME_UNITS, ...WEIGHT_UNITS, ...LENGTH_UNITS, ...COUNT_UNITS };
 
 // 긴 단위 문자열이 먼저 매칭되도록 길이 내림차순 정렬
 const UNIT_KEYS_SORTED = Object.keys(ALL_UNITS).sort((a, b) => b.length - a.length);
@@ -96,12 +104,28 @@ function extractTokens(text) {
     const rawUnit = match[2].toLowerCase();
     const unitInfo = ALL_UNITS[rawUnit];
     if (!unitInfo || Number.isNaN(value)) continue;
+
+    // "70g/㎡"(평량, 종이 두께 단위) 처럼 무게 단위를 재활용해 "제품 총량"이 아닌
+    // "재질 밀도/스펙"을 표기하는 경우가 있다 (물티슈/화장지 원단 두께 등).
+    // 이런 토큰은 총량 계산에 넣으면 안 되므로 근처에 "평량" 키워드가 있으면 제외한다.
+    const contextWindow = text.slice(Math.max(0, match.index - 6), match.index + match[0].length + 6);
+    if (unitInfo.category === 'weight' && /평량/.test(contextWindow)) {
+      continue;
+    }
+
+    // "총32개"처럼 숫자 바로 앞에 '총'이 붙으면 "이게 최종 총합이다"라고 명시하는 표기다.
+    // 이 신호 자체로 무조건 제외/채택을 결정하지 않고, resolveCluster에서
+    // "총" 앞 다른 토큰들의 곱과 비교해 재진술인지 권위있는 총합 override인지 판단한다.
+    const precedingChars = text.slice(Math.max(0, match.index - 2), match.index);
+    const hasTotalPrefix = /총\s*$/.test(precedingChars);
     tokens.push({
       value,
       rawUnit,
       category: unitInfo.category,
       baseValue: value * unitInfo.factor,
       index: match.index,
+      length: match[0].length,
+      hasTotalPrefix,
     });
   }
   return tokens;
@@ -116,30 +140,119 @@ function stripParentheses(text) {
 }
 
 /**
- * 세그먼트(번들 하나) 안에서 "기준 용량/무게" x "그 안의 개수 토큰들의 곱"을 계산한다.
- * @param {Array} tokens - extractTokens() 결과 중 이 세그먼트에 속하는 토큰들
- * @returns {{ unit: 'ml'|'g'|'count', totalValue: number } | null}
+ * 인접 토큰끼리 묶어 "하나의 수량 표현 단위(클러스터)"로 그룹핑한다.
+ * 실제 상품명은 "100매 60팩" 처럼 진짜 곱셈 관계인 토큰들도 있지만,
+ * "6000매 ... 100매 60팩 ... 6000매" 처럼 서로 무관하거나 총합을 재확인하는
+ * 토큰들이 멀리 떨어져 섞여 있는 경우가 많다. 문자 간격(gap)이 임계값을 넘으면
+ * 새 클러스터로 분리해 서로 다른 표현을 뭉뚱그려 곱하는 사고를 막는다.
  */
-function resolveSegment(tokens) {
-  if (tokens.length === 0) return null;
-  const volumeOrWeight = tokens.filter(t => t.category === 'volume' || t.category === 'weight');
+const CLUSTER_GAP_THRESHOLD = 5; // 토큰 사이 문자 간격(공백/조사 등 포함) 허용치
+
+function clusterTokens(tokens) {
+  if (tokens.length === 0) return [];
+  const sorted = [...tokens].sort((a, b) => a.index - b.index);
+  const clusters = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const cur = sorted[i];
+    const gap = cur.index - (prev.index + prev.length);
+    if (gap > CLUSTER_GAP_THRESHOLD) {
+      clusters.push([cur]);
+    } else {
+      clusters[clusters.length - 1].push(cur);
+    }
+  }
+  return clusters;
+}
+
+/**
+ * count 토큰들을 순서대로 곱하되, 어떤 토큰의 값이 "지금까지 누적된 곱"과 같으면
+ * 그건 새로운 곱셈 항이 아니라 "총합을 다시 확인해주는 문구"(예: "100매 60팩 ... 6000매")로
+ * 간주해 곱하지 않고 건너뛴다. 그렇지 않으면 곱셈 폭발(예: 100 x 24 x 2400)이 발생한다.
+ */
+function multiplyWithRestatementSkip(counts) {
+  let running = 1;
+  for (const c of counts) {
+    const isRestatement = running !== 1 && Math.abs(c.value - running) < 0.001 * running + 1e-9;
+    if (!isRestatement) {
+      running *= c.value;
+    }
+  }
+  return running;
+}
+
+/**
+ * 클러스터 하나를 "단위 값"으로 변환한다.
+ * @returns {{ unit: 'ml'|'g'|'m'|'count', totalValue: number, tokenCount: number } | null}
+ */
+function resolveCluster(tokens) {
+  const measures = tokens.filter(t => t.category === 'volume' || t.category === 'weight' || t.category === 'length');
   const counts = tokens.filter(t => t.category === 'count');
 
-  if (volumeOrWeight.length > 0) {
-    const base = volumeOrWeight[0];
-    const multiplier = counts.length > 0
-      ? counts.reduce((acc, c) => acc * c.value, 1)
-      : 1;
-    const unit = base.category === 'volume' ? 'ml' : 'g';
-    return { unit, totalValue: base.baseValue * multiplier };
+  // "총N개"처럼 명시적 총합 라벨이 붙은 count 토큰이 있으면, 그 값이 다른 count 토큰들의
+  // 곱과 일치하는지 확인한다. 일치하면 재진술(중복)이므로 그 항은 곱셈에서 제외하고
+  // 나머지로 계산한 값을 그대로 쓴다. 일치하지 않으면 "총"이 더 권위 있는 최종 수치이므로
+  // 그 값을 그대로 총합으로 채택한다 (다른 count는 부분 표기로 간주).
+  const totalTagged = counts.filter(c => c.hasTotalPrefix);
+  const untaggedCounts = counts.filter(c => !c.hasTotalPrefix);
+
+  function resolveCounts() {
+    if (totalTagged.length > 0) {
+      const totalCandidate = totalTagged[0];
+      const otherProduct = untaggedCounts.length > 0
+        ? multiplyWithRestatementSkip(untaggedCounts)
+        : null;
+      if (otherProduct != null && Math.abs(totalCandidate.value - otherProduct) < 0.001 * otherProduct + 1e-9) {
+        // 재진술 확인됨 -> 나머지 토큰들의 곱을 사용
+        return otherProduct;
+      }
+      // 총합이 다른 조합과 안 맞거나 비교 대상이 없음 -> "총"이 유일/권위있는 값
+      return totalCandidate.value;
+    }
+    return untaggedCounts.length > 0
+      ? multiplyWithRestatementSkip(untaggedCounts)
+      : null;
   }
 
-  if (counts.length > 0) {
-    const totalCount = counts.reduce((acc, c) => acc * c.value, 1);
-    return { unit: 'count', totalValue: totalCount };
+  if (measures.length > 0) {
+    const base = measures[0];
+    const multiplier = resolveCounts();
+    const unit = base.category === 'volume' ? 'ml' : base.category === 'weight' ? 'g' : 'm';
+    return { unit, totalValue: base.baseValue * (multiplier != null ? multiplier : 1), tokenCount: tokens.length };
+  }
+
+  const resolvedCount = resolveCounts();
+  if (resolvedCount != null) {
+    return { unit: 'count', totalValue: resolvedCount, tokenCount: counts.length };
   }
 
   return null;
+}
+
+/**
+ * 세그먼트(번들 하나) 안에서 "기준 용량/무게/길이" x "곱셈 관계의 개수 토큰들"을 계산한다.
+ * 세그먼트 내에 여러 클러스터가 있으면:
+ *  - 용량/무게/길이(measure) 클러스터가 있으면 그 중 첫 번째를 채택 (가장 신뢰도 높은 표기)
+ *  - measure 클러스터가 없으면, 토큰 수가 가장 많은(=가장 상세히 풀어쓴) count 클러스터를 채택
+ * @param {Array} tokens - extractTokens() 결과 중 이 세그먼트에 속하는 토큰들
+ * @returns {{ unit: 'ml'|'g'|'m'|'count', totalValue: number } | null}
+ */
+function resolveSegment(tokens) {
+  if (tokens.length === 0) return null;
+  const clusters = clusterTokens(tokens).map(resolveCluster).filter(Boolean);
+  if (clusters.length === 0) return null;
+
+  const measureClusters = clusters.filter(c => c.unit !== 'count');
+  if (measureClusters.length > 0) {
+    return measureClusters[0];
+  }
+
+  // count 전용: 토큰 수가 가장 많은(가장 상세한) 클러스터 채택, 동률이면 값이 큰 쪽
+  const best = clusters.reduce((a, b) => {
+    if (b.tokenCount !== a.tokenCount) return b.tokenCount > a.tokenCount ? b : a;
+    return b.totalValue > a.totalValue ? b : a;
+  });
+  return best;
 }
 
 /**
@@ -163,7 +276,14 @@ function resolveSegment(tokens) {
  */
 function parseQuantity(text) {
   if (!text) return null;
-  const cleaned = stripParentheses(text);
+  const withoutParens = parseQuantityFromCleaned(stripParentheses(text));
+  if (withoutParens) return withoutParens;
+  // 괄호 제거 후 파싱이 실패했다면, 괄호 안에 유일한 수량 정보가 있었을 가능성이 있다
+  // (예: "(46매x12팩)크리넥스 마이비데..."). 원본 텍스트로 재시도한다.
+  return parseQuantityFromCleaned(text);
+}
+
+function parseQuantityFromCleaned(cleaned) {
   const segments = cleaned.split('+');
 
   const resolvedSegments = [];
@@ -207,6 +327,10 @@ function calcUnitPrice(price, text) {
     perAmount = 100; // 100g당 가격
     unitPrice = (price / qty.totalValue) * perAmount;
     displayUnit = '100g';
+  } else if (qty.unit === 'm') {
+    perAmount = 1; // 1m당 가격 (화장지/키친타월 등 "총 길이"가 핵심인 상품군)
+    unitPrice = price / qty.totalValue;
+    displayUnit = 'm';
   } else {
     // count
     unitPrice = price / qty.totalValue;

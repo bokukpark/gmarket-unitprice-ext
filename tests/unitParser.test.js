@@ -105,6 +105,79 @@ test('실전 예시: 같은 펩시 제로콜라, 용량 다른 두 상품 비교
   assert(a.unitPrice < b.unitPrice, `a(${a.unitPrice}) should be cheaper per 100ml than b(${b.unitPrice})`);
 });
 
+// --- 실제 지마켓 데이터(patchright로 확보) 기반 회귀 테스트 ---
+// "펩시 제로콜라", "화장지", "마이비데" 검색 결과에서 파서가 실패하거나
+// 완전히 틀린 값을 냈던 케이스들. 재발 방지용.
+
+test('번들 상품(+): 서로 다른 상품 두 개를 합산', () => {
+  const q = parseQuantity('펩시제로 210ml 30캔 +사이다제로 210ml 30캔 제로칼로리');
+  assert.strictEqual(q.unit, 'ml');
+  approxEqual(q.totalValue, 210 * 30 + 210 * 30); // 12600
+});
+
+test('공백 없는 배수 표기: "210mlx30캔"', () => {
+  const q = parseQuantity('펩시콜라 제로라임 210mlx30캔');
+  assert.strictEqual(q.unit, 'ml');
+  approxEqual(q.totalValue, 6300);
+});
+
+test('PET 단위 인식: "1.25L x 12PET"', () => {
+  const q = parseQuantity('롯데 펩시콜라 제로슈거 라임 업소용 1.25L x 12PET');
+  assert.strictEqual(q.unit, 'ml');
+  approxEqual(q.totalValue, 15000);
+});
+
+test('길이 단위(화장지): "28m 60롤" -> m 기준', () => {
+  const q = parseQuantity('깨끗한나라 벚꽃 3겹 롤화장지 천연펄프 휴지 28m 60롤 최신리뉴얼');
+  assert.strictEqual(q.unit, 'm');
+  approxEqual(q.totalValue, 1680);
+});
+
+test('길이 단위(화장지): "25M X 24롤 2팩" -> 길이 x 롤 x 팩', () => {
+  const q = parseQuantity('크리넥스 3겹 울트라클린 화이트 25M X 24롤 2팩 화장지 휴지');
+  assert.strictEqual(q.unit, 'm');
+  approxEqual(q.totalValue, 1200); // 25 * 24 * 2
+});
+
+test('멀리 떨어진 재진술 숫자 무시: "6000매 ... 100매 60팩 ... 6000매"', () => {
+  const q = parseQuantity('천연펄프 리필티슈 6000매 숙박업소용 대용량 100매 60팩 리필미용티슈6000매');
+  assert.strictEqual(q.unit, 'count');
+  // 100*60=6000 이 재진술과 일치 -> 6000 채택 (곱셈 폭발 방지가 핵심)
+  approxEqual(q.totalValue, 6000);
+});
+
+test('연쇄 배수 중 마지막이 재진술: "100매 1박스 24입 2400매"', () => {
+  const q = parseQuantity('베스토 물티슈 100매 1박스 24입 2400매');
+  assert.strictEqual(q.unit, 'count');
+  approxEqual(q.totalValue, 2400); // 100*1*24=2400 과 일치 -> 재진술 skip
+});
+
+test('"총" 라벨이 재진술인 경우: "46매/4개x8개-총32개"', () => {
+  const q = parseQuantity('크리넥스 마이비데 물티슈 캡형 46매/4개x8개-총32개');
+  assert.strictEqual(q.unit, 'count');
+  // 4*8=32와 "총32개"가 일치 -> 재진술, 46매는 별도 클러스터(단일 상품 단위)라 채택 안 됨
+  approxEqual(q.totalValue, 32);
+});
+
+test('"총" 라벨이 유일한 정보인 경우: "1팩 총 30롤"', () => {
+  const q = parseQuantity('헬로키티 4겹 천연펄프 화장지 핑크리본 1팩 총 30롤');
+  assert.strictEqual(q.unit, 'count');
+  // 1(팩)과 30(총 라벨)이 일치하지 않음 -> "총"이 권위있는 값으로 채택
+  approxEqual(q.totalValue, 30);
+});
+
+test('괄호 안에 유일한 수량 정보가 있는 경우: "(46매x12팩)상품명..."', () => {
+  const q = parseQuantity('(46매x12팩)크리넥스 마이비데 물티슈 리필 클린게어');
+  assert.strictEqual(q.unit, 'count');
+  approxEqual(q.totalValue, 552); // 46 * 12, 괄호 밖엔 수량 정보 없음 -> 괄호 안으로 폴백
+});
+
+test('"평량"(종이 두께 스펙)은 총량이 아니므로 무시: "75g 고평량 ... 70매 10팩"', () => {
+  const q = parseQuantity('마이케어 헤이그린 75g 고평량 저자극 두꺼운 물티슈 캡형 70매 10팩');
+  assert.strictEqual(q.unit, 'count'); // 75g은 재질 스펙이라 무게 기준이 아니라 개수 기준이 되어야 함
+  approxEqual(q.totalValue, 700); // 70 * 10
+});
+
 let pass = 0, fail = 0;
 for (const c of cases) {
   try {
