@@ -15,19 +15,19 @@
 
   const { calcUnitPrice, parsePrice } = window.UnitParser;
 
-  // ---- 설정: 실제 DOM 확인 후 이 부분만 교체하면 됨 ----
+  // ---- 설정: patchright로 실제 지마켓 검색 결과 페이지(2024-07)를 확인해 확정한 셀렉터 ----
+  // 참고: 지마켓은 Cloudflare 봇 차단이 있어 curl/일반 headless로는 접근 불가.
+  //       patchright(스텔스 패치된 Playwright)로 우회해 실제 DOM을 확인함.
   const SELECTORS = {
-    // 상품 카드 하나를 감싸는 컨테이너 후보들(우선순위 순으로 시도)
+    // 상품 카드 하나를 감싸는 컨테이너
     cardCandidates: [
-      'div.box__component-itemcard',
-      'li.box__item',
-      'div[data-montelena-nclick] li',
-      'ul.grid__row li',
+      '.box__component-itemcard',
     ],
-    // 카드 내부 상품명 텍스트
-    nameCandidates: ['.text__item', '.itemname', 'a[data-montelena-nclick] .text', 'strong.title'],
-    // 카드 내부 가격 텍스트 (판매가)
-    priceCandidates: ['.box__price-seller strong', '.price_seller', 'strong.text__value', '.box__price strong'],
+    // 카드 내부 상품명 텍스트 (title 속성에도 동일 텍스트가 있어 안전)
+    nameCandidates: ['.text__item'],
+    // 카드 내부 판매가(할인 적용된 최종가). strong 태그만 정확히 선택해야
+    // "할인률 6%" 같은 텍스트가 섞이지 않는다.
+    priceCandidates: ['.box__price-seller strong.text__value'],
   };
 
   const BADGE_CLASS = 'upx-badge';
