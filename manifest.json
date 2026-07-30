@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "지마켓 단위가격 비교",
-  "description": "지마켓 검색 결과에서 상품별 단위가격(100ml/100g/개당 가격)을 표시하고 비교합니다.",
-  "version": "0.1.0",
+  "name": "오픈마켓 단위가격 비교",
+  "description": "지마켓/쿠팡 검색 결과에서 상품별 단위가격(100ml/100g/개당 가격)을 표시하고 비교합니다. 쿠팡은 배송비 포함/제외 기준을 선택해 비교할 수 있습니다.",
+  "version": "0.2.0",
   "content_scripts": [
     {
       "matches": [
@@ -12,6 +12,14 @@
         "https://www.gmarket.co.kr/search*"
       ],
       "js": ["src/parser/unitParser.js", "src/content/gmarketSearch.js"],
+      "css": ["src/styles/badge.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.coupang.com/np/search*"
+      ],
+      "js": ["src/parser/unitParser.js", "src/content/coupangSearch.js"],
       "css": ["src/styles/badge.css"],
       "run_at": "document_idle"
     }

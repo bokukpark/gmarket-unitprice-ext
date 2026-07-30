@@ -166,26 +166,73 @@ function clusterTokens(tokens) {
 }
 
 /**
- * count 토큰들을 순서대로 곱하되, 어떤 토큰의 값이 "지금까지 누적된 곱"과 같으면
- * 그건 새로운 곱셈 항이 아니라 "총합을 다시 확인해주는 문구"(예: "100매 60팩 ... 6000매")로
- * 간주해 곱하지 않고 건너뛴다. 그렇지 않으면 곱셈 폭발(예: 100 x 24 x 2400)이 발생한다.
+ * count 토큰들을 곱하되, 두 단계로 재진술(중복 표기)을 감지해 곱셈 폭발을 막는다.
+ *
+ *  1단계 (스팬 내부): 콤마로 나뉘지 않은 연속 구간(스팬) 안에서, 토큰을 순서대로 곱해가되
+ *     어떤 토큰의 값이 "그 스팬 안에서 지금까지 누적된 곱"과 같으면 재진술로 보고 건너뛴다.
+ *     예: "6000매 ... 100매 60팩 ... 6000매" (콤마 없음, 전체가 한 스팬)
+ *         -> 100*60=6000, 그 다음 6000은 누적값과 같으므로 스킵 -> 최종 6000
+ *
+ *  2단계 (스팬 사이): 콤마로 나뉜 여러 스팬은 "서로 다른 방식으로 같은 총량을 표현"하는
+ *     경우가 흔하다 (예: "30롤 3팩, 30개입, 3개" — 30*3=90을 "30개입"/"3개"로 다시 풀어 쓴 것).
+ *     이런 경우 전부 곱하면 안 되고, 가장 상세히 풀어 쓴(토큰 수가 가장 많은) 스팬 하나만
+ *     채택한다. 동률이면 값이 큰 스팬을 채택한다.
+ *
+ * @param {Array} counts - category가 'count'인 토큰 배열
+ * @param {string} [text] - 원본 세그먼트 텍스트 (콤마 스팬 경계 계산용, 없으면 전체를 한 스팬으로 취급)
  */
-function multiplyWithRestatementSkip(counts) {
-  let running = 1;
-  for (const c of counts) {
-    const isRestatement = running !== 1 && Math.abs(c.value - running) < 0.001 * running + 1e-9;
-    if (!isRestatement) {
-      running *= c.value;
+function multiplyWithRestatementSkip(counts, text) {
+  if (counts.length === 0) return 1;
+  const sorted = [...counts].sort((a, b) => a.index - b.index);
+
+  // 콤마 기준으로 스팬 분리 (text 없으면 전체가 하나의 스팬)
+  const spans = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const cur = sorted[i];
+    const between = text ? text.slice(prev.index + prev.length, cur.index) : '';
+    if (between.includes(',')) {
+      spans.push([cur]);
+    } else {
+      spans[spans.length - 1].push(cur);
     }
   }
-  return running;
+
+  // 1단계: 스팬 내부 토큰 단위 재진술 스킵
+  function multiplyWithinSpan(tokens) {
+    let running = 1;
+    for (const t of tokens) {
+      const isRestatement = running !== 1 && Math.abs(t.value - running) < 0.001 * running + 1e-9;
+      if (!isRestatement) running *= t.value;
+    }
+    return running;
+  }
+
+  if (spans.length === 1) {
+    return multiplyWithinSpan(spans[0]);
+  }
+
+  // 2단계: 스팬이 여럿이면 "가장 상세한"(토큰 수 최다, 동률이면 값 최대) 스팬 하나만 채택
+  let bestSpan = spans[0];
+  let bestProduct = multiplyWithinSpan(bestSpan);
+  for (let i = 1; i < spans.length; i++) {
+    const product = multiplyWithinSpan(spans[i]);
+    const better = spans[i].length !== bestSpan.length
+      ? spans[i].length > bestSpan.length
+      : product > bestProduct;
+    if (better) {
+      bestSpan = spans[i];
+      bestProduct = product;
+    }
+  }
+  return bestProduct;
 }
 
 /**
  * 클러스터 하나를 "단위 값"으로 변환한다.
  * @returns {{ unit: 'ml'|'g'|'m'|'count', totalValue: number, tokenCount: number } | null}
  */
-function resolveCluster(tokens) {
+function resolveCluster(tokens, text) {
   const measures = tokens.filter(t => t.category === 'volume' || t.category === 'weight' || t.category === 'length');
   const counts = tokens.filter(t => t.category === 'count');
 
@@ -200,7 +247,7 @@ function resolveCluster(tokens) {
     if (totalTagged.length > 0) {
       const totalCandidate = totalTagged[0];
       const otherProduct = untaggedCounts.length > 0
-        ? multiplyWithRestatementSkip(untaggedCounts)
+        ? multiplyWithRestatementSkip(untaggedCounts, text)
         : null;
       if (otherProduct != null && Math.abs(totalCandidate.value - otherProduct) < 0.001 * otherProduct + 1e-9) {
         // 재진술 확인됨 -> 나머지 토큰들의 곱을 사용
@@ -210,7 +257,7 @@ function resolveCluster(tokens) {
       return totalCandidate.value;
     }
     return untaggedCounts.length > 0
-      ? multiplyWithRestatementSkip(untaggedCounts)
+      ? multiplyWithRestatementSkip(untaggedCounts, text)
       : null;
   }
 
@@ -237,9 +284,9 @@ function resolveCluster(tokens) {
  * @param {Array} tokens - extractTokens() 결과 중 이 세그먼트에 속하는 토큰들
  * @returns {{ unit: 'ml'|'g'|'m'|'count', totalValue: number } | null}
  */
-function resolveSegment(tokens) {
+function resolveSegment(tokens, text) {
   if (tokens.length === 0) return null;
-  const clusters = clusterTokens(tokens).map(resolveCluster).filter(Boolean);
+  const clusters = clusterTokens(tokens).map(c => resolveCluster(c, text)).filter(Boolean);
   if (clusters.length === 0) return null;
 
   const measureClusters = clusters.filter(c => c.unit !== 'count');
@@ -292,7 +339,7 @@ function parseQuantityFromCleaned(cleaned) {
   for (const seg of segments) {
     const tokens = extractTokens(seg);
     allTokens.push(...tokens);
-    const resolved = resolveSegment(tokens);
+    const resolved = resolveSegment(tokens, seg);
     if (resolved) resolvedSegments.push(resolved);
   }
 
@@ -311,37 +358,58 @@ function parseQuantityFromCleaned(cleaned) {
  * 가격 문자열/숫자와 상품명 텍스트를 받아 단위가격을 계산한다.
  * @param {number} price - 원 단위 숫자 가격 (콤마/원 기호 제거된 상태)
  * @param {string} text - 상품명 + 옵션 텍스트
- * @returns {{ unitPrice: number, unit: string, displayUnit: string, totalValue: number } | null}
+ * @param {number} [shippingFee=0] - 배송비(원). 지정하면 반환값에 배송비 포함 가격도 함께 계산된다.
+ *   (쿠팡처럼 "무료배송"이 아니라 건별 배송비가 별도로 붙는 상품 비교 시 필요.
+ *    배송비를 무시하고 상품가만으로 비교하면 실제 체감 가격과 크게 어긋날 수 있다 —
+ *    예: 5,110원짜리 상품에 배송비 10,000원이 붙으면 실질 단가가 3배 가까이 뛴다.)
+ * @returns {{
+ *   unitPrice: number,            // 배송비 미포함 단위가격 (기존 동작과 100% 동일, 하위 호환)
+ *   unitPriceWithShipping: number,// 배송비 포함 단위가격
+ *   unit: string,
+ *   displayUnit: string,
+ *   totalValue: number,
+ *   shippingFee: number
+ * } | null}
  */
-function calcUnitPrice(price, text) {
+function calcUnitPrice(price, text, shippingFee) {
   if (typeof price !== 'number' || Number.isNaN(price) || price <= 0) return null;
   const qty = parseQuantity(text);
   if (!qty) return null;
 
-  let unitPrice, displayUnit, perAmount;
+  const fee = typeof shippingFee === 'number' && !Number.isNaN(shippingFee) && shippingFee > 0
+    ? shippingFee
+    : 0;
+
+  let unitPrice, unitPriceWithShipping, displayUnit, perAmount;
   if (qty.unit === 'ml') {
     perAmount = 100; // 100ml당 가격
     unitPrice = (price / qty.totalValue) * perAmount;
+    unitPriceWithShipping = ((price + fee) / qty.totalValue) * perAmount;
     displayUnit = '100ml';
   } else if (qty.unit === 'g') {
     perAmount = 100; // 100g당 가격
     unitPrice = (price / qty.totalValue) * perAmount;
+    unitPriceWithShipping = ((price + fee) / qty.totalValue) * perAmount;
     displayUnit = '100g';
   } else if (qty.unit === 'm') {
     perAmount = 1; // 1m당 가격 (화장지/키친타월 등 "총 길이"가 핵심인 상품군)
     unitPrice = price / qty.totalValue;
+    unitPriceWithShipping = (price + fee) / qty.totalValue;
     displayUnit = 'm';
   } else {
     // count
     unitPrice = price / qty.totalValue;
+    unitPriceWithShipping = (price + fee) / qty.totalValue;
     displayUnit = '개';
   }
 
   return {
     unitPrice: Math.round(unitPrice * 100) / 100, // 소수 2자리
+    unitPriceWithShipping: Math.round(unitPriceWithShipping * 100) / 100,
     unit: qty.unit,
     displayUnit,
     totalValue: qty.totalValue,
+    shippingFee: fee,
   };
 }
 

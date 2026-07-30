@@ -178,6 +178,38 @@ test('"평량"(종이 두께 스펙)은 총량이 아니므로 무시: "75g 고�
   approxEqual(q.totalValue, 700); // 70 * 10
 });
 
+// --- 배송비 포함/불포함 단위가격 (쿠팡 등 배송비 별도 상품 대응) ---
+
+test('배송비 미지정 시 기존 동작과 100% 동일 (하위 호환)', () => {
+  const withoutFee = calcUnitPrice(12900, '펩시 제로 콜라 500ml x 20개');
+  assert.strictEqual(withoutFee.unitPrice, 129);
+  assert.strictEqual(withoutFee.unitPriceWithShipping, 129); // shippingFee 없으면 동일
+  assert.strictEqual(withoutFee.shippingFee, 0);
+});
+
+test('배송비 반영: 쿠팡 실사례 - 5,110원 상품 + 배송비 10,000원 (1.25L x 12개)', () => {
+  const r = calcUnitPrice(5110, '펩시 콜라 제로슈거 라임향, 1.25L, 12개', 10000);
+  // 총 용량 1250 * 12 = 15000ml
+  approxEqual(r.unitPrice, (5110 / 15000) * 100); // ~34.07원 (쿠팡 표시값과 일치)
+  approxEqual(r.unitPriceWithShipping, ((5110 + 10000) / 15000) * 100); // ~100.73원, 배송비 반영시 3배 가까이 뜀
+  assert(r.unitPriceWithShipping > r.unitPrice * 2, '배송비 포함시 가격이 대폭 상승해야 함');
+});
+
+test('배송비 반영 후 순위가 뒤바뀔 수 있음 (정렬 시나리오 검증)', () => {
+  // A: 배송비 미포함 단가는 훨씬 싸 보이지만, 비싼 배송비 때문에 실제로는 더 비쌀 수 있음
+  const a = calcUnitPrice(5110, '상품A 1.25L 12개', 10000);      // 미포함 34.07 / 포함 100.73
+  const b = calcUnitPrice(8000, '상품B 355ml 24개', 0);          // 무료배송, 93.9원 (배송비 무관하게 동일)
+  assert(a.unitPrice < b.unitPrice, '배송비 미포함 기준으로는 A가 더 쌈');
+  assert(a.unitPriceWithShipping > b.unitPriceWithShipping, '배송비 포함 기준으로는 순위가 역전됨');
+});
+
+test('쿠팡 실사례: 콤마로 구분된 여러 스팬이 같은 총량의 재진술인 경우 - "30m 30롤 3팩, 30개입, 3개"', () => {
+  const q = parseQuantity('깨끗한나라 순수프리미엄 30m 30롤 3팩, 30개입, 3개');
+  assert.strictEqual(q.unit, 'm');
+  // 30롤*3팩=90 과 30개입/3개(콤마로 나뉜 재진술 스팬)가 같은 정보 -> 상세한 스팬(90) 채택, 이중곱 방지
+  approxEqual(q.totalValue, 2700); // 30m * 90
+});
+
 let pass = 0, fail = 0;
 for (const c of cases) {
   try {
