@@ -25,7 +25,8 @@
   background-color: #ff5722;
 }
 
-/* 쿠팡 정렬 토글 (배송비 포함/제외 기준 전환) */
+/* 화면 우측 상단 오버레이: 정렬 및 쿠팡 배송비 기준 전환 */
+.upx-sort-overlay,
 .upx-toggle-container {
   position: fixed;
   top: 12px;
@@ -68,6 +69,27 @@
 
 .upx-toggle-btn--active {
   color: #fff;
+  background: #ff5722;
+  border-color: #ff5722;
+}
+
+.upx-sort-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: #333;
+  border: 1px solid #333;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.upx-sort-btn:hover {
+  background: #111;
+}
+
+.upx-sort-btn--active {
   background: #ff5722;
   border-color: #ff5722;
 }

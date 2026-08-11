@@ -33,9 +33,11 @@
   const BADGE_CLASS = 'upx-badge';
   const PROCESSED_ATTR = 'data-upx-processed';
   const TOGGLE_ID = 'upx-sort-toggle';
+  const SORT_BUTTON_ID = 'upx-sort-button';
 
   // 'excludeShipping' | 'includeShipping' — 현재 정렬/하이라이트 기준
   let sortMode = 'excludeShipping';
+  let isSortedByUnitPrice = false;
 
   function firstMatch(root, selectors) {
     for (const sel of selectors) {
@@ -154,6 +156,36 @@
     sorted[0].card.classList.add('upx-cheapest');
   }
 
+  function sortCardsByUnitPrice(results) {
+    const key = sortMode === 'includeShipping' ? 'unitPriceWithShipping' : 'unitPrice';
+    const sortable = results.filter(({ card }) => card.parentElement);
+    if (sortable.length < 2) return;
+
+    const parent = sortable[0].card.parentElement;
+    const cards = sortable.filter(({ card }) => card.parentElement === parent);
+    if (cards.length < 2) return;
+
+    cards.forEach(({ card }, index) => {
+      if (!card.dataset.upxOriginalOrder) card.dataset.upxOriginalOrder = String(index);
+    });
+    cards.sort((a, b) => a[key] - b[key]);
+
+    const fragment = document.createDocumentFragment();
+    cards.forEach(({ card }) => fragment.appendChild(card));
+    parent.appendChild(fragment);
+  }
+
+  function restoreCardOrder() {
+    const cards = findCards().filter(card => card.dataset.upxOriginalOrder != null && card.parentElement);
+    if (cards.length < 2) return;
+    const parent = cards[0].parentElement;
+    const siblings = cards.filter(card => card.parentElement === parent);
+    siblings.sort((a, b) => Number(a.dataset.upxOriginalOrder) - Number(b.dataset.upxOriginalOrder));
+    const fragment = document.createDocumentFragment();
+    siblings.forEach(card => fragment.appendChild(card));
+    parent.appendChild(fragment);
+  }
+
   function refreshBadgeTexts(results) {
     // 정렬 모드가 바뀌면 이미 렌더링된 배지 텍스트도 갱신
     results.forEach(({ card }) => {
@@ -193,6 +225,28 @@
       const results = processCards();
       refreshBadgeTexts(results);
       highlightCheapest(results);
+      if (isSortedByUnitPrice) sortCardsByUnitPrice(results);
+    });
+
+    const sortButton = document.createElement('button');
+    sortButton.id = SORT_BUTTON_ID;
+    sortButton.type = 'button';
+    sortButton.className = 'upx-sort-btn';
+    sortButton.textContent = '단위가격 낮은순 정렬';
+    sortButton.setAttribute('aria-pressed', 'false');
+    container.appendChild(sortButton);
+    sortButton.addEventListener('click', () => {
+      const results = processCards();
+      isSortedByUnitPrice = !isSortedByUnitPrice;
+      if (isSortedByUnitPrice) {
+        sortCardsByUnitPrice(results);
+        sortButton.textContent = '원래 순서로 보기';
+      } else {
+        restoreCardOrder();
+        sortButton.textContent = '단위가격 낮은순 정렬';
+      }
+      sortButton.classList.toggle('upx-sort-btn--active', isSortedByUnitPrice);
+      sortButton.setAttribute('aria-pressed', String(isSortedByUnitPrice));
     });
   }
 

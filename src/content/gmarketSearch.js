@@ -32,6 +32,8 @@
 
   const BADGE_CLASS = 'upx-badge';
   const PROCESSED_ATTR = 'data-upx-processed';
+  const SORT_OVERLAY_ID = 'upx-sort-overlay';
+  let isSortedByUnitPrice = false;
 
   function firstMatch(root, selectors) {
     for (const sel of selectors) {
@@ -121,7 +123,64 @@
     sorted[0].card.classList.add('upx-cheapest');
   }
 
+  // 카드가 모두 같은 부모에 있을 때만 DOM 순서를 바꾼다. 광고/추천 카드처럼
+  // 다른 컨테이너에 있는 카드는 원래 위치를 유지해 검색 결과 레이아웃을 깨지 않는다.
+  function sortCardsByUnitPrice(results) {
+    const sortable = results.filter(({ card }) => card.parentElement);
+    if (sortable.length < 2) return;
+
+    const parent = sortable[0].card.parentElement;
+    const cards = sortable.filter(({ card }) => card.parentElement === parent);
+    if (cards.length < 2) return;
+
+    cards.forEach(({ card }, index) => {
+      if (!card.dataset.upxOriginalOrder) card.dataset.upxOriginalOrder = String(index);
+    });
+    cards.sort((a, b) => a.unitPrice - b.unitPrice);
+
+    const fragment = document.createDocumentFragment();
+    cards.forEach(({ card }) => fragment.appendChild(card));
+    parent.appendChild(fragment);
+  }
+
+  function restoreCardOrder() {
+    const cards = findCards().filter(card => card.dataset.upxOriginalOrder != null && card.parentElement);
+    if (cards.length < 2) return;
+    const parent = cards[0].parentElement;
+    const siblings = cards.filter(card => card.parentElement === parent);
+    siblings.sort((a, b) => Number(a.dataset.upxOriginalOrder) - Number(b.dataset.upxOriginalOrder));
+    const fragment = document.createDocumentFragment();
+    siblings.forEach(card => fragment.appendChild(card));
+    parent.appendChild(fragment);
+  }
+
+  function ensureSortOverlay() {
+    if (document.getElementById(SORT_OVERLAY_ID)) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = SORT_OVERLAY_ID;
+    overlay.className = 'upx-sort-overlay';
+    overlay.innerHTML = '<button type="button" class="upx-sort-btn" aria-pressed="false">단위가격 낮은순 정렬</button>';
+    document.body.appendChild(overlay);
+
+    const button = overlay.querySelector('.upx-sort-btn');
+    button.addEventListener('click', () => {
+      const results = processCards();
+      isSortedByUnitPrice = !isSortedByUnitPrice;
+      if (isSortedByUnitPrice) {
+        sortCardsByUnitPrice(results);
+        button.textContent = '원래 순서로 보기';
+      } else {
+        restoreCardOrder();
+        button.textContent = '단위가격 낮은순 정렬';
+      }
+      button.classList.toggle('upx-sort-btn--active', isSortedByUnitPrice);
+      button.setAttribute('aria-pressed', String(isSortedByUnitPrice));
+    });
+  }
+
   function run() {
+    ensureSortOverlay();
     const results = processCards();
     highlightCheapest(results);
   }
